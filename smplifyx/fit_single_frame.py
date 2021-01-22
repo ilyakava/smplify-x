@@ -507,6 +507,37 @@ def fit_single_frame(img,
         out_mesh.export(mesh_fn)
 
     if visualize:
+        def _create_raymond_lights():
+            """An instance method on the Viewer class which requires a display
+            https://pyrender.readthedocs.io/en/latest/_modules/pyrender/viewer.html?highlight=_create_raymond_lights#
+            """
+            thetas = np.pi * np.array([1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0])
+            phis = np.pi * np.array([0.0, 2.0 / 3.0, 4.0 / 3.0])
+    
+            nodes = []
+    
+            for phi, theta in zip(phis, thetas):
+                xp = np.sin(theta) * np.cos(phi)
+                yp = np.sin(theta) * np.sin(phi)
+                zp = np.cos(theta)
+    
+                z = np.array([xp, yp, zp])
+                z = z / np.linalg.norm(z)
+                x = np.array([-z[1], z[0], 0.0])
+                if np.linalg.norm(x) == 0:
+                    x = np.array([1.0, 0.0, 0.0])
+                x = x / np.linalg.norm(x)
+                y = np.cross(z, x)
+    
+                matrix = np.eye(4)
+                matrix[:3,:3] = np.c_[x,y,z]
+                nodes.append(pyrender.Node(
+                    light=pyrender.DirectionalLight(color=np.ones(3), intensity=1.0),
+                    matrix=matrix
+                ))
+    
+            return nodes
+        
         import pyrender
 
         material = pyrender.MetallicRoughnessMaterial(
@@ -535,20 +566,27 @@ def fit_single_frame(img,
             cx=camera_center[0], cy=camera_center[1])
         scene.add(camera, pose=camera_pose)
 
-        # Get the lights from the viewer
-        light_nodes = monitor.mv.viewer._create_raymond_lights()
+        # Get the lights from the viewer, monitor.mv.viewer
+        light_nodes = _create_raymond_lights()
         for node in light_nodes:
             scene.add_node(node)
 
         r = pyrender.OffscreenRenderer(viewport_width=W,
                                        viewport_height=H,
                                        point_size=1.0)
-        color, _ = r.render(scene, flags=pyrender.RenderFlags.RGBA)
+        color, depth = r.render(scene, flags=pyrender.RenderFlags.RGBA)
+        r.delete()
         color = color.astype(np.float32) / 255.0
-
-        valid_mask = (color[:, :, -1] > 0)[:, :, np.newaxis]
+        
+        if color.shape[2] == 4: # RGBA succeeded
+            valid_mask = (color[:, :, -1] > 0)[:, :, np.newaxis]
+            color = color[:,:,:-1]
+        else: # RGBA doesn't work with osmesa, https://github.com/mmatl/pyrender/issues/137
+            valid_mask = (depth > 0)[:, :, np.newaxis]
+            
+            
         input_img = img.detach().cpu().numpy()
-        output_img = (color[:, :, :-1] * valid_mask +
+        output_img = (color * valid_mask +
                       (1 - valid_mask) * input_img)
 
         img = pil_img.fromarray((output_img * 255).astype(np.uint8))
